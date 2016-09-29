@@ -22,7 +22,7 @@ Bug reports and feedback are highly appreciated and can be made through our
 
 ### Documentation
 
-* [Installation](INSTALL.md)
+* [Installation](mini-ndn-master/INSTALL.md)
 * [Getting Started](docs/GETTING-STARTED.md)
 * [Mini-NDN Edit](docs/GUI.md)
 * [Running Experiments](docs/EXPERIMENTS.md)
