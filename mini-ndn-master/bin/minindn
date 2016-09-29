@@ -1,0 +1,400 @@
+# -*- Mode:python; c-file-style:"gnu"; indent-tabs-mode:nil -*- */
+#
+# Copyright (C) 2015-2016, The University of Memphis,
+#                          Arizona Board of Regents,
+#                          Regents of the University of California.
+#
+# This file is part of Mini-NDN.
+# See AUTHORS.md for a complete list of Mini-NDN authors and contributors.
+#
+# Mini-NDN is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Mini-NDN is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Mini-NDN, e.g., in COPYING.md file.
+# If not, see <http://www.gnu.org/licenses/>.
+#
+# This file incorporates work covered by the following copyright and
+# permission notice:
+#
+#   Mininet 2.2.1 License
+#
+#   Copyright (c) 2013-2015 Open Networking Laboratory
+#   Copyright (c) 2009-2012 Bob Lantz and The Board of Trustees of
+#   The Leland Stanford Junior University
+#
+#   Original authors: Bob Lantz and Brandon Heller
+#
+#   We are making Mininet available for public use and benefit with the
+#   expectation that others will use, modify and enhance the Software and
+#   contribute those enhancements back to the community. However, since we
+#   would like to make the Software available for broadest use, with as few
+#   restrictions as possible permission is hereby granted, free of charge, to
+#   any person obtaining a copy of this Software to deal in the Software
+#   under the copyrights without restriction, including without limitation
+#   the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#   and/or sell copies of the Software, and to permit persons to whom the
+#   Software is furnished to do so, subject to the following conditions:
+#
+#   The above copyright notice and this permission notice shall be included
+#   in all copies or substantial portions of the Software.
+#
+#   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+#   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+#   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+#   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+#   CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+#   TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+#   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+#   The name and trademarks of copyright holder(s) may NOT be used in
+#   advertising or publicity pertaining to the Software or any derivatives
+#   without specific, written prior permission.
+
+from mininet.topo import Topo
+from mininet.net import Mininet
+from mininet.log import setLogLevel, output, info
+from mininet.cli import CLI
+from mininet.link import TCLink
+from mininet.util import ipStr, ipParse
+
+
+from ndn import ExperimentManager
+from ndn.ndn_host import NdnHost, CpuLimitedNdnHost
+from ndn.conf_parser import parse_hosts, parse_switches, parse_links
+
+import os.path, time
+import shutil
+import optparse
+import datetime
+from os.path import expanduser
+import sys
+import signal
+from subprocess import call
+
+from ndn.nlsr import Nlsr, NlsrConfigGenerator
+from ndn.nfd import Nfd
+
+VERSION_NUMBER = "0.2.0"
+
+def printExperimentNames(option, opt, value, parser):
+    experimentNames = ExperimentManager.getExperimentNames()
+
+    print "Mini-NDN experiments:"
+    for experiment in experimentNames:
+        print "  %s" % experiment
+
+    sys.exit()
+
+def printVersion(option, opt, value, parser):
+    print "Mini-NDN v%s" % VERSION_NUMBER
+    sys.exit()
+
+class ProgramOptions:
+    def __init__(self):
+        self.ctime = 60
+        self.experimentName = None
+        self.nFaces = 3
+        self.templateFile = "minindn.conf"
+        self.hr = False
+        self.isCliEnabled = True
+        self.nlsrSecurity = False
+        self.nPings = 300
+        self.testbed = False
+        self.workDir = "/tmp"
+        self.resultDir = None
+        self.pctTraffic = 1.0
+
+def createResultsDir(resultDir, faces, hr):
+    if faces == 0:
+        faces = "all"
+
+    if hr:
+        routingType = "/hr/"
+    else:
+        routingType = "/ls/"
+
+    resultDir = "%s/%s/faces-%s" % (str(resultDir), routingType, str(faces))
+    resultDir = os.path.abspath(resultDir)
+
+    if not os.path.isdir(resultDir):
+        os.makedirs(resultDir)
+    else:
+        print("Results directory (%s) already exists!" % resultDir)
+        sys.exit(1);
+
+    print "Results will be stored at: %s" % resultDir
+    return resultDir
+
+def parse_args():
+    usage = """Usage: minindn [template_file] [ -t | --testbed ]
+    If no template_file is given, ndn_utils/default-topology.conf (given sample file)
+    will be used.
+    If --testbed is used, minindn will run the NDN Project Testbed.
+    """
+
+    parser = optparse.OptionParser(usage)
+
+    parser.add_option("--ctime", action="store", dest="ctime", type="int", default=60,
+    help="Specify convergence time for the topology (Default: 60 seconds)")
+
+    parser.add_option("--experiment", action="store", dest="experiment",
+    help="Runs the specified experiment")
+
+    parser.add_option("--faces", action="store", dest="faces", type="int", default=3,
+    help="Specify number of faces 0-60")
+
+    parser.add_option("--hr", action="store_true", dest="hr", default=False,
+    help="--hr is used to turn on hyperbolic routing")
+
+    parser.add_option("--list-experiments", action="callback", callback=printExperimentNames,
+    help="Lists the names of all available experiments")
+
+    parser.add_option("--no-cli", action="store_false", dest="isCliEnabled", default=True,
+    help="Run experiments and exit without showing the command line interface")
+
+    parser.add_option("--nPings", action="store", dest="nPings", type="int", default=300,
+    help="Number of pings to perform between each node in the experiment")
+
+    parser.add_option("--nlsr-security", action="store_true", dest="nlsrSecurity", default=False,
+    help="Enables NLSR security")
+
+    parser.add_option("-t", "--testbed", action="store_true", dest="testbed", default=False,
+    help="instantiates NDN Testbed")
+
+    parser.add_option("--work-dir", action="store", dest="workDir", default="/tmp",
+    help="Specify the working directory; default is /tmp")
+
+    parser.add_option("--result-dir", action="store", dest="resultDir", default=None,
+    help="Specify the full path destination folder where experiment results will be moved")
+
+    parser.add_option("--pct-traffic", action="store", dest="pctTraffic", type="float", default=1.0,
+    help="Specify the percentage of nodes each node should ping")
+
+    parser.add_option('--version', '-V', action='callback', callback=printVersion,
+    help='Displays version information')
+
+    (args, arg) = parser.parse_args()
+
+    options = ProgramOptions()
+    options.ctime = args.ctime
+    options.experimentName = args.experiment
+    options.nFaces = args.faces
+    options.hr = args.hr
+    options.isCliEnabled = args.isCliEnabled
+    options.nlsrSecurity = args.nlsrSecurity
+    options.nPings = args.nPings
+
+    options.testbed = args.testbed
+    options.workDir = args.workDir
+    options.resultDir = args.resultDir
+    options.pctTraffic = args.pctTraffic
+
+    if options.experimentName is not None and options.experimentName not in ExperimentManager.getExperimentNames():
+        print("No experiment named %s" % options.experimentName)
+        sys.exit()
+
+    if options.experimentName is not None and options.resultDir is None:
+        print "No results folder specified; experiment results will remain in the working directory"
+
+    if len(arg) == 0 or len(arg) > 2:
+        options.templateFile = ''
+    else:
+        options.templateFile = arg[0]
+
+    return options
+
+class NdnTopo(Topo):
+    def __init__(self, conf_arq, workDir, **opts):
+        Topo.__init__(self, **opts)
+
+        global hosts_conf
+        global links_conf
+        hosts_conf = parse_hosts(conf_arq)
+        switches_conf = parse_switches(conf_arq)
+        links_conf = parse_links(conf_arq)
+
+        self.isTCLink = False
+        self.isLimited = False
+
+        for host in hosts_conf:
+            if host.cpu != None and self.isLimited != True:
+                self.isLimited = True
+            self.addHost(host.name, app=host.app, params=host.uri_tuples, cpu=host.cpu,cores=host.cores,cache=host.cache, workdir=workDir)
+
+        for switch in switches_conf:
+            self.addSwitch(switch.name)
+
+        for link in links_conf:
+            if len(link.linkDict) == 0:
+                self.addLink(link.h1, link.h2)
+            else:
+                self.addLink(link.h1, link.h2, **link.linkDict)
+                self.isTCLink = True
+
+        info('Parse of ' + conf_arq + ' done.\n')
+
+def execute(options):
+    "Create a network based on template_file"
+
+    template_file = options.templateFile
+    install_dir='/usr/local/etc/mini-ndn/'
+
+    if template_file == '':
+        template_file = install_dir + 'default-topology.conf'
+
+    if options.testbed:
+        template_file = install_dir + 'minindn.testbed.conf'
+
+    if os.path.exists(template_file) == False:
+        info('No template file given and default template file cannot be found. Exiting...\n')
+        quit()
+
+    # Use nfd.conf as default configuration for NFD, else use the sample
+
+    nfdConfFile = "%s/nfd.conf" % install_dir
+    if os.path.isfile("/usr/local/etc/ndn/nfd.conf") == True:
+        shutil.copy2("/usr/local/etc/ndn/nfd.conf", nfdConfFile)
+    elif os.path.isfile("/usr/local/etc/ndn/nfd.conf.sample") == True:
+        shutil.copy2("/usr/local/etc/ndn/nfd.conf.sample", nfdConfFile)
+    else:
+        sys.exit("nfd.conf or nfd.conf.sample cannot be found in the expected directory. Exit.")
+
+    call(["sudo", "sed", "-i", 's|default_level [A-Z]*$|default_level $LOG_LEVEL|g', nfdConfFile])
+
+    if options.resultDir is not None:
+        options.resultDir = createResultsDir(options.resultDir, options.nFaces, options.hr)
+
+    topo = NdnTopo(template_file, options.workDir)
+
+    t = datetime.datetime.now()
+
+    if topo.isTCLink == True and topo.isLimited == True:
+        net = Mininet(topo,host=CpuLimitedNdnHost,link=TCLink)
+    elif topo.isTCLink == True and topo.isLimited == False:
+        net = Mininet(topo,host=NdnHost,link=TCLink)
+    elif topo.isTCLink == False and topo.isLimited == True:
+        net = Mininet(topo,host=CpuLimitedNdnHost)
+    else:
+        net = Mininet(topo,host=NdnHost)
+
+    t2 = datetime.datetime.now()
+
+    delta = t2 - t
+
+    info('Setup time: ' + str(delta.seconds) + '\n')
+
+    net.start()
+
+    # Giving proper IPs to intf so neighbor nodes can communicate
+    # This is one way of giving connectivity, another way could be
+    # to insert a switch between each pair of neighbors
+    ndnNetBase = "1.0.0.0"
+    interfaces = []
+    for host in net.hosts:
+        for intf in host.intfList():
+            link = intf.link
+            node1, node2 = link.intf1.node, link.intf2.node
+
+            if node1 in net.switches or node2 in net.switches:
+                continue
+
+            if link.intf1 not in interfaces and link.intf2 not in interfaces:
+                interfaces.append(link.intf1)
+                interfaces.append(link.intf2)
+                node1.setIP(ipStr(ipParse(ndnNetBase) + 1) + '/30', intf=link.intf1)
+                node2.setIP(ipStr(ipParse(ndnNetBase) + 2) + '/30', intf=link.intf2)
+                ndnNetBase = ipStr(ipParse(ndnNetBase) + 4)
+
+    nodes = ""    # Used later to check prefix name in checkFIB
+
+    # NLSR Security
+    if options.nlsrSecurity is True:
+        Nlsr.createKeysAndCertificates(net, options.workDir)
+
+    # NLSR initialization
+    for host in net.hosts:
+        nodes += str(host.name) + ","
+
+        conf = next(x for x in hosts_conf if x.name == host.name)
+        host.nlsrParameters = conf.nlsrParameters
+
+        if options.nFaces is not None:
+            host.nlsrParameters["max-faces-per-prefix"] = options.nFaces
+
+        if options.hr is True:
+            host.nlsrParameters["hyperbolic-state"] = "on"
+
+        # Generate NLSR configuration file
+        configGenerator = NlsrConfigGenerator(host, options.nlsrSecurity)
+        configGenerator.createConfigFile()
+
+        # Start NLSR
+        host.nlsr = Nlsr(host)
+        host.nlsr.start()
+
+    nodes = nodes[0:-1]
+
+    for host in net.hosts:
+        if 'app' in host.params:
+            if host.params['app'] != '':
+                app = host.params['app']
+                print "Starting " + app + " on node " + host.name
+                print(host.cmd(app))
+
+    # Load experiment
+    experimentName = options.experimentName
+
+    if experimentName is not None:
+        print "Loading experiment: %s" % experimentName
+
+        experimentArgs = {
+            "net": net,
+            "nodes": nodes,
+            "ctime": options.ctime,
+            "nPings": options.nPings,
+            "strategy": Nfd.STRATEGY_BEST_ROUTE,
+            "pctTraffic": options.pctTraffic
+        }
+
+        experiment = ExperimentManager.create(experimentName, experimentArgs)
+
+        if experiment is not None:
+            experiment.start()
+        else:
+            print "ERROR: Experiment '%s' does not exist" % experimentName
+            return
+
+    if options.isCliEnabled is True:
+        CLI(net)
+
+    net.stop()
+
+    if options.resultDir is not None:
+        print("Moving results to %s" % options.resultDir)
+        os.system("sudo mv /%s/* %s" % (options.workDir, options.resultDir))
+
+def signal_handler(signal, frame):
+    print('Cleaning up...')
+    call(["nfd-stop"])
+    call(["sudo", "mn", "--clean"])
+    sys.exit(1)
+
+if __name__ == '__main__':
+
+    hosts_conf = []
+    links_conf = []
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    options = parse_args()
+
+    setLogLevel('info')
+    execute(options)
