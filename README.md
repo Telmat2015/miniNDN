@@ -23,7 +23,7 @@ Bug reports and feedback are highly appreciated and can be made through our
 ### Documentation
 
 * [Installation](mini-ndn-master/INSTALL.md)
-* [Getting Started](docs/GETTING-STARTED.md)
-* [Mini-NDN Edit](docs/GUI.md)
-* [Running Experiments](docs/EXPERIMENTS.md)
+* [Getting Started](mini-ndn-master/docs/GETTING-STARTED.md)
+* [Mini-NDN Edit](mini-ndn-master/docs/GUI.md)
+* [Running Experiments](mini-ndn-master/docs/EXPERIMENTS.md)
 * [Mini-NDN Redmine](http://redmine.named-data.net/projects/mini-ndn)
